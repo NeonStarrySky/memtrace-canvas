@@ -33,6 +33,28 @@ RAM_TRACE_DRRUN=/path/to/drrun ./scripts/run-trace.sh --trace ./program arg1
 
 打开终端显示的本地地址，默认是 `http://127.0.0.1:8787`。第一个查看器连上后开始采集。`RAM_TRACE_PORT` 可选择端口，`RAM_TRACE_THREAD` 可按线程筛选，`RAM_TRACE_MIN` 和 `RAM_TRACE_MAX` 可指定包含端点的十六进制虚拟地址范围。结束后页面保留结果，按 `Ctrl+C` 停止本地服务。
 
+### 面向对象粒子示例
+
+[`examples/particles.cpp`](examples/particles.cpp) 是一个命令行 C++ 粒子系统。`ParticleSystem` 用连续数组存放 `Particle` 对象。每个粒子有三维位置、速度、加速度，以及寿命、质量、阻力、温度、颜色、大小、透明度、旋转等属性。`Particle::update()` 计算运动、碰撞反弹、降温和过期重生，结束时输出统计。
+
+默认运行约 30 秒，分三个阶段更新 12、24、48 个粒子。开启插桩后的实录约 52 秒，末帧已记录超过 15 万次粒子对象读取。[查看动图](examples/particle-trace.gif)。
+
+在 Linux 上可编译并快速运行 3 步。
+
+```bash
+particle_bin=/tmp/memtrace-particles-example
+c++ -std=c++17 -O2 -fno-pie -no-pie examples/particles.cpp -o "$particle_bin"
+"$particle_bin" 3
+```
+
+用 `nm` 找到粒子对象数组所在的 `particle_system` 符号，再把地址范围交给采集脚本。这里使用固定装载地址的示例编译参数，以便直接用 `nm` 的地址筛选。
+
+```bash
+read -r base bytes < <(nm -S --defined-only "$particle_bin" | awk '$4 == "particle_system" { print $1, $2 }')
+printf -v last '0x%x' "$((16#$base + 16#$bytes - 1))"
+RAM_TRACE_MIN="0x$base" RAM_TRACE_MAX="$last" ./scripts/run-trace.sh --trace "$particle_bin"
+```
+
 ## 模拟演示模块与入口
 
 | 模块 | 代码入口 | 职责 |
