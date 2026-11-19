@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>内存读取轨迹</title>
+<style>
+  :root { color-scheme: dark; font: 15px/1.5 system-ui, sans-serif; background: #0b111a; color: #edf5fc; }
+  * { box-sizing: border-box; }
+  body { margin: 0; }
+  main { max-width: 1120px; margin: auto; padding: 36px 24px; }
+  h1, p, dl, dd { margin: 0; }
+  h1 { font-size: clamp(27px, 5vw, 38px); letter-spacing: -.04em; }
+  header, .controls, .bounds { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 14px; }
+  header { margin-bottom: 18px; }
+  .status, dt { color: #a1b4c8; font-size: 13px; }
+  .status[data-state="error"] { color: #ffbf95; }
+  .panel { background: #111b28; border: 1px solid #2a3b4c; border-radius: 12px; padding: 14px; }
+  .controls { justify-content: flex-start; margin-bottom: 12px; }
+  button { border: 1px solid #3b5065; border-radius: 6px; background: #192738; color: inherit; font: inherit; padding: 5px 10px; cursor: pointer; }
+  button:hover, button:focus-visible { border-color: #66efd8; }
+  button:disabled { opacity: .48; cursor: default; }
+  .bounds { font: 13px ui-monospace, monospace; color: #a1b4c8; overflow-wrap: anywhere; }
+  canvas { display: block; width: 100%; height: clamp(210px, 48vw, 460px); margin: 8px 0; outline: 1px solid #2a3b4c; border-radius: 6px; background: #080f18; }
+  .metrics { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 20px; }
+  dd { color: #66efd8; font: 16px ui-monospace, monospace; overflow-wrap: anywhere; }
+  #point { margin-top: 10px; min-height: 1.5em; color: #c1d4e6; font: 13px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
+  @media (max-width: 540px) { main { padding: 22px 12px; } }
+</style>
+
+<main>
+  <header>
+    <h1>内存读取轨迹</h1>
+    <p id="status" class="status" role="status">正在连接本地采集器</p>
+  </header>
+  <section class="panel" aria-label="虚拟地址点图">
+    <div class="controls">
+      <button id="fit-all" type="button" disabled>适配全部</button>
+      <button id="fit-recent" type="button" disabled>适配近期</button>
+    </div>
+    <div class="bounds"><span id="range-start">—</span><span id="range-end">—</span></div>
+    <canvas id="plot" role="img" aria-label="按虚拟地址从左到右、从上到下绘制的读取点"></canvas>
+    <p id="point">等待第一次读取</p>
+    <dl class="metrics">
+      <div><dt>已采集读取</dt><dd id="total">0</dd></div>
+      <div><dt>显示跨度</dt><dd id="span">—</dd></div>
+      <div><dt>最新步长（同线程）</dt><dd id="stride">—</dd></div>
+      <div><dt>平均跳距（同线程）</dt><dd id="mean">—</dd></div>
+    </dl>
+  </section>
+</main>
+<script type="module" src="/viewer.mjs"></script>
+</html>

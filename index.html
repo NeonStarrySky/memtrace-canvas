@@ -1,0 +1,868 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAM 访问模拟器</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --page: #0b111a;
+    --panel: #111b28;
+    --line: #2a3b4c;
+    --text: #edf5fc;
+    --muted: #a1b4c8;
+    --accent: #66efd8;
+    --cell: #25384b;
+    font: 15px/1.5 system-ui, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(ellipse at 30% 0%, #162637, var(--page) 55%); color: var(--text); }
+  main { max-width: 1152px; margin: auto; padding: 36px 24px 32px; }
+  header { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 22px; }
+  h1, h2, h3, p { margin: 0; }
+  h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.2; letter-spacing: -.04em; }
+  h2 { font-size: 17px; }
+  h3 { font-size: 13px; }
+  .muted, small, label { color: var(--muted); }
+  .mono, output, .ticks { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  .capacity { padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 12px; }
+  .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 14px 16px; }
+  .control, .buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  button, select { border: 1px solid #3b5065; border-radius: 6px; background: #192738; color: var(--text); padding: 7px 11px; font: inherit; }
+  button, select, input[type="range"] { cursor: pointer; }
+  button:hover, select:hover { border-color: var(--accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  #play { min-width: 64px; background: var(--accent); color: #092822; border-color: var(--accent); font-weight: 700; }
+  input[type="range"] { width: 136px; accent-color: var(--accent); }
+  #rate { min-width: 9ch; }
+  .processes { display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 14px 0; color: var(--muted); font-size: 13px; }
+  .processes span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--process); box-shadow: 0 0 7px var(--process); }
+  .processes b, .log-process { color: var(--process); }
+  .views { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .view { padding: 16px; }
+  .view-heading { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 12px; }
+  .array-frame, .bank { background: #0c1520; border: 1px solid #2a3d50; border-radius: 7px; padding: 9px; }
+  .array-frame { margin-top: 1px; }
+  .bank + .bank { margin-top: 8px; }
+  .bank h3 { display: flex; justify-content: space-between; align-items: center; gap: 8px; color: #d5e5f3; }
+  .bank h3 small { font-weight: 400; }
+  .memory-layout { display: grid; grid-template-columns: 5ch minmax(0, 1fr); gap: 3px 7px; }
+  .grid, .ticks { display: grid; grid-template-columns: repeat(32, minmax(0, 1fr)); column-gap: 3px; }
+  .ticks, .row-labels { color: var(--muted); font-size: 10px; }
+  .ticks { grid-column: 2; margin: 2px 0 1px; }
+  .row-labels { display: grid; row-gap: 3px; text-align: right; }
+  .row-labels span { display: flex; align-items: center; justify-content: flex-end; line-height: 1; }
+  .grid { row-gap: 3px; }
+  .cell { display: block; position: relative; height: 12px; border-radius: 2px; background: var(--cell); }
+  .cell:nth-child(4n) { box-shadow: inset -1px 0 #476078; }
+  .cell[data-region="drone"] { background: #354f66; }
+  .cell[data-region="map"] { background: #404354; }
+  .cell.cache-line-start::before { content: ''; position: absolute; left: -2px; inset-block: 0; width: 1px; background: #677e94; }
+  .cell.cache-touched::before { background: #ffce69; }
+  .cell.current { z-index: 1; background: var(--process); outline: 1px solid #f4fffd; box-shadow: 0 0 12px var(--process); }
+  .cell.current.write { outline: 2px solid #ffbf72; }
+  .cell.inspected { z-index: 2; outline: 1px solid white; outline-offset: 1px; }
+  .array-frame .cell { height: 14px; }
+  .bank .grid { background: repeating-linear-gradient(90deg, #142334 0 1px, transparent 1px 10%); }
+  .caption { margin-top: 10px; font-size: 12px; }
+  .readout { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+  .readout section { min-width: 0; padding: 12px 16px; }
+  #current, #inspect { margin-top: 4px; overflow-wrap: anywhere; }
+  #current { color: var(--accent); }
+  #inspect { color: var(--muted); }
+  .trace { margin-top: 12px; padding: 12px 16px; }
+  .trace-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+  .trace-content { display: grid; grid-template-columns: minmax(0, 230px) minmax(0, 1fr); gap: 10px 20px; margin-top: 8px; }
+  .trace-numbers { display: flex; flex-wrap: wrap; align-content: center; gap: 8px 18px; }
+  .trace-numbers div { min-width: 86px; }
+  .trace-numbers strong { display: block; color: var(--accent); font-size: 19px; }
+  .trace-numbers small { display: block; }
+  .chart { display: grid; grid-template-columns: 5ch minmax(0, 1fr); gap: 6px; }
+  .chart-axis { display: flex; flex-direction: column; justify-content: space-between; text-align: right; color: var(--muted); font-size: 11px; }
+  #stride-chart { display: block; width: 100%; height: 70px; border: 1px solid var(--line); border-radius: 6px; background: #0c1520; }
+  .history { margin-top: 12px; padding: 12px 16px; }
+  .history h2 { font-size: 15px; }
+  .history ol { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+  .history li { padding: 3px 7px; border-radius: 4px; background: #1a2a3c; font-size: 12px; }
+  .history .log-write { color: #ffcb92; }
+  .history .empty { padding-left: 0; background: none; color: var(--muted); }
+  .game { display: grid; grid-template-columns: minmax(0, 344px) minmax(0, 1fr); align-items: center; gap: 14px 20px; padding: 14px 16px; margin-bottom: 12px; }
+  .game[hidden] { display: none; }
+  .game canvas { display: block; width: 100%; border: 1px solid var(--line); border-radius: 7px; background: #0c1520; }
+  .game-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+  .game-summary { color: var(--accent); font-size: 13px; }
+  .game-copy { margin-top: 6px; font-size: 13px; }
+  .game-layout { display: block; margin-top: 8px; color: #d5e5f3; font-size: 13px; overflow-wrap: anywhere; }
+  .game button { margin-top: 10px; }
+  @media (max-width: 750px) {
+    main { padding: 24px 12px; }
+    .views, .readout { grid-template-columns: 1fr; }
+    .view { padding: 12px; }
+    .grid, .ticks { column-gap: 2px; }
+  }
+  @media (max-width: 560px) {
+    .game, .trace-content { grid-template-columns: 1fr; }
+  }
+</style>
+
+<main>
+  <header>
+    <h1>RAM 访问模拟器</h1>
+    <div class="capacity mono">2 KiB · 512 × 32 bit</div>
+  </header>
+
+  <div class="toolbar panel">
+    <div class="control">
+      <label for="preset">进程组合</label>
+      <select id="preset">
+        <option value="mixed">混合读取</option>
+        <option value="banks">双 Bank 交错</option>
+        <option value="hotspot">共享热点</option>
+        <option value="objects">采集游戏 · 面向对象</option>
+        <option value="ecs">采集游戏 · ECS</option>
+        <option value="batch-objects">批量移动 · 按对象</option>
+        <option value="batch-fields">批量移动 · 按字段</option>
+      </select>
+    </div>
+    <div class="control">
+      <label for="process-count">进程数</label>
+      <select id="process-count"></select>
+    </div>
+    <div class="buttons">
+      <button id="play" type="button" aria-pressed="false">播放</button>
+      <button id="step" type="button">单步</button>
+      <button id="reset" type="button">重置</button>
+    </div>
+    <div class="control">
+      <label for="speed">速率</label>
+      <input id="speed" type="range" min="0" value="4" title="0.25–240 次/秒">
+      <output id="rate" for="speed">4 次/秒</output>
+    </div>
+  </div>
+  <div id="processes" class="processes" aria-label="当前组合中的进程"></div>
+
+  <section class="game panel" id="game" hidden>
+    <canvas id="board" width="384" height="192" role="img" aria-label="信标采集游戏中的无人机和信标"></canvas>
+    <div>
+      <div class="game-heading"><h2 id="game-title">信标采集</h2><p id="game-summary" class="game-summary mono"></p></div>
+      <p id="game-copy" class="game-copy"></p>
+      <code id="game-layout" class="game-layout"></code>
+      <p id="game-rule" class="game-copy muted"></p>
+      <button id="game-tick" type="button">完成本轮</button>
+    </div>
+  </section>
+
+  <div class="views">
+    <section class="view panel">
+      <div class="view-heading"><h2>线性内存</h2><small class="mono">Uint32Array(512)</small></div>
+      <div class="array-frame" id="linear"></div>
+      <p class="caption muted">每格 4 字节，每 16 格是一条模拟缓存行。金色竖线标出触及的缓存行。</p>
+    </section>
+    <section class="view panel">
+      <div class="view-heading"><h2>RAM 阵列</h2><small>2 Bank · 每 Bank 8 行 × 32 列</small></div>
+      <div id="banks"></div>
+      <p class="caption muted">示意映射中，连续 32 个元素填满一行，再切换 Bank。</p>
+    </section>
+  </div>
+
+  <div class="readout">
+    <section class="panel"><h2>最近一次访问</h2><p id="current" class="mono">点击播放或单步开始。</p></section>
+    <section class="panel"><h2>地址对应关系</h2><p id="inspect" class="mono">悬停任一格子，查看它在两个视图中的位置。</p></section>
+  </div>
+  <section class="trace panel" aria-labelledby="trace-title">
+    <div class="trace-heading"><h2 id="trace-title">内存步长</h2><small id="trace-scope"></small></div>
+    <div class="trace-content">
+      <div class="trace-numbers">
+        <div><small>最常见步长占比</small><strong id="stride-share" class="mono">—</strong><small id="stride-summary"></small></div>
+        <div><small>触及的缓存行</small><strong id="cache-lines" class="mono">0</strong></div>
+      </div>
+      <div class="chart">
+        <div class="chart-axis mono" aria-hidden="true"><span id="stride-max">+16</span><span>0</span><span id="stride-min">−16</span></div>
+        <canvas id="stride-chart" width="780" height="70" role="img" aria-label="连续读取之间的带方向步长，单位为内存格"></canvas>
+      </div>
+    </div>
+  </section>
+  <section class="history panel">
+    <h2>访问顺序</h2>
+    <ol id="history" class="mono" aria-label="最近的内存访问，按时间顺序"></ol>
+  </section>
+</main>
+
+<script>
+  const bankCount = 2;
+  const rows = 8;
+  const columns = 32;
+  const memory = new Uint32Array(bankCount * rows * columns);
+  const cellsPerCacheLine = 64 / memory.BYTES_PER_ELEMENT;
+  const traceWindow = 32;
+
+  function locationOf(index) {
+    const block = Math.floor(index / columns);
+    return {
+      address: index * memory.BYTES_PER_ELEMENT,
+      bank: block % bankCount,
+      row: Math.floor(block / bankCount),
+      column: index % columns,
+    };
+  }
+
+  function* scan(start, stride, length = memory.length) {
+    for (let offset = 0; ; offset = (offset + stride) % length) {
+      yield (start + offset) % memory.length;
+    }
+  }
+
+  function* repeat(...indices) {
+    while (true) yield* indices;
+  }
+
+  const mixedReaders = [
+    ['顺序读取 · 从 28 开始', () => scan(28, 1)],
+    ['跨步读取 · 每次前进 32 格', () => scan(32, 32)],
+    ['热点读取 · 固定为 32', () => repeat(32)],
+  ];
+  const hotspotReaders = [
+    ['扫描 30–35', () => scan(30, 1, 6)],
+    ['反复读取 32', () => repeat(32)],
+    ['交替读取 32 和 33', () => repeat(32, 33)],
+  ];
+  const presets = {
+    mixed(index) {
+      if (index < mixedReaders.length) return mixedReaders[index];
+      const strides = [1, 4, 17, 32];
+      const start = index * 29 % memory.length;
+      const stride = strides[(index - mixedReaders.length) % strides.length];
+      return [`从 ${start} 开始 · 步长 ${stride}`, () => scan(start, stride)];
+    },
+    banks(index) {
+      const bank = index % bankCount;
+      const column = Math.floor(index / bankCount);
+      const start = bank * columns + column;
+      return [`Bank ${bank} · 第 ${column} 列`, () => scan(start, columns * bankCount)];
+    },
+    hotspot(index) {
+      if (index < hotspotReaders.length) return hotspotReaders[index];
+      const neighbor = 31 + index;
+      return [`交替读取 32 和 ${neighbor}`, () => repeat(32, neighbor)];
+    },
+  };
+  const colors = [
+    '#66efd8', '#ffbf72', '#c3a7ff', '#78bdff', '#fa86a8', '#c6e77b', '#ffa0ed', '#f2df77',
+    '#72e49a', '#8594ff', '#ff8b78', '#80d8fa', '#dea2ff', '#edaf9a', '#aec3df', '#f5f0b5',
+  ];
+  const rates = [0.25, 0.5, 1, 2, 4, 6, 8, 12, 16, 24, 32, 48, 60, 90, 120, 180, 240];
+
+  const droneCount = 16;
+  const boardColumns = 16;
+  const boardRows = 8;
+  const tileBase = 128;
+  const offsets = { x: 0, y: 1, vx: 2, vy: 3, score: 4 };
+  const fieldNames = Object.keys(offsets);
+  const beacons = [[2, 2], [5, 4], [8, 1], [9, 5], [12, 3], [14, 6]];
+  const batchDefaults = {
+    x: 0, y: 0, vx: 1, vy: 0, score: 0, health: 100, shield: 50, energy: 100,
+    ammo: 20, team: 0, state: 0, animation: 0, cooldown: 0, target: 0, color: 0, flags: 0,
+  };
+  const batchFields = Object.keys(batchDefaults);
+  const batchDroneCount = memory.length / batchFields.length;
+
+  function objectAddress(drone, field) {
+    return drone * fieldNames.length + offsets[field];
+  }
+
+  function componentAddress(drone, field) {
+    return offsets[field] * droneCount + drone;
+  }
+
+  function tileAddress(x, y) {
+    return tileBase + y * boardColumns + x;
+  }
+
+  function* moveAxis(positionAddress, velocityAddress, limit) {
+    const position = yield positionAddress;
+    let velocity = yield velocityAddress;
+    if (position + velocity < 0 || position + velocity >= limit) {
+      velocity = -velocity;
+      yield { index: velocityAddress, value: velocity };
+    }
+    yield { index: positionAddress, value: position + velocity };
+  }
+
+  function* collectBeacon(xAddress, yAddress, scoreAddress) {
+    const x = yield xAddress;
+    const y = yield yAddress;
+    const points = yield tileAddress(x, y);
+    if (points > 0) {
+      const score = yield scoreAddress;
+      yield { index: scoreAddress, value: score + points };
+    }
+  }
+
+  class Drone {
+    constructor(id) {
+      this.id = id;
+    }
+
+    *update() {
+      const x = objectAddress(this.id, 'x');
+      const y = objectAddress(this.id, 'y');
+      yield* moveAxis(x, objectAddress(this.id, 'vx'), boardColumns);
+      yield* moveAxis(y, objectAddress(this.id, 'vy'), boardRows);
+      yield* collectBeacon(x, y, objectAddress(this.id, 'score'));
+    }
+  }
+
+  function* updateDrones(drones) {
+    for (const drone of drones) yield* drone.update();
+  }
+
+  function* movementSystem(entities) {
+    for (const entity of entities) {
+      yield* moveAxis(componentAddress(entity, 'x'), componentAddress(entity, 'vx'), boardColumns);
+    }
+    for (const entity of entities) {
+      yield* moveAxis(componentAddress(entity, 'y'), componentAddress(entity, 'vy'), boardRows);
+    }
+  }
+
+  function* collectionSystem(entities) {
+    for (const entity of entities) {
+      yield* collectBeacon(componentAddress(entity, 'x'), componentAddress(entity, 'y'), componentAddress(entity, 'score'));
+    }
+  }
+
+  function* updateComponents(entities) {
+    yield* movementSystem(entities);
+    yield* collectionSystem(entities);
+  }
+
+  function* moveBatch(entities, address) {
+    for (const entity of entities) {
+      const index = address(entity, 'x');
+      const x = yield index;
+      yield { index, value: x + 1 };
+    }
+  }
+
+  function createBatchGame(mode, taskCount) {
+    const objects = mode === 'batch-objects';
+    const address = (drone, field) => {
+      const offset = batchFields.indexOf(field);
+      return objects ? drone * batchFields.length + offset : offset * batchDroneCount + drone;
+    };
+    const fields = new Map();
+    for (let drone = 0; drone < batchDroneCount; drone++) {
+      const initial = {
+        ...batchDefaults,
+        x: drone % boardColumns,
+        y: 1 + Math.floor(drone / boardColumns) * 4 + drone % 2,
+        team: drone % 2,
+        color: drone % colors.length,
+      };
+      for (const field of batchFields) {
+        const index = address(drone, field);
+        const name = objects ? `D${drone + 1}.${field}` : `${field}[${drone + 1}]`;
+        fields.set(index, { name, region: 'drone' });
+        memory[index] = initial[field];
+      }
+    }
+    return {
+      mode, batch: true, address, fields, droneCount: batchDroneCount,
+      owners: new Array(batchDroneCount), round: 0, tasksRemaining: taskCount,
+    };
+  }
+
+  function createGame(mode, taskCount) {
+    if (mode === 'batch-objects' || mode === 'batch-fields') return createBatchGame(mode, taskCount);
+    const address = mode === 'objects' ? objectAddress : componentAddress;
+    const fields = new Map();
+    for (let drone = 0; drone < droneCount; drone++) {
+      const initial = {
+        x: (drone * 5 + 1) % boardColumns,
+        y: (drone * 3 + 1) % boardRows,
+        vx: drone % 2 === 0 ? 1 : -1,
+        vy: drone % 4 < 2 ? -1 : 1,
+        score: 0,
+      };
+      for (const field of fieldNames) {
+        const index = address(drone, field);
+        const name = mode === 'objects' ? `D${drone + 1}.${field}` : `${field}[${drone + 1}]`;
+        fields.set(index, { name, region: 'drone', signed: field === 'vx' || field === 'vy' });
+        memory[index] = initial[field];
+      }
+    }
+    for (let y = 0; y < boardRows; y++) {
+      for (let x = 0; x < boardColumns; x++) {
+        const index = tileAddress(x, y);
+        fields.set(index, { name: `map[${x}, ${y}]`, region: 'map' });
+        memory[index] = 0;
+      }
+    }
+    for (const [x, y] of beacons) memory[tileAddress(x, y)] = 1;
+    return { mode, address, fields, droneCount, owners: new Array(droneCount), round: 0, tasksRemaining: taskCount };
+  }
+
+  function makeGameTask(index, taskCount) {
+    if (game.batch) {
+      // Interleaving these tasks visits the drones in ascending order in either layout.
+      const entities = [];
+      for (let drone = index; drone < game.droneCount; drone += taskCount) {
+        entities.push(drone);
+        game.owners[drone] = index;
+      }
+      const label = `无人机 ${entities.slice(0, 2).map(drone => drone + 1).join('、')}${entities.length > 2 ? '…' : ''}`;
+      const address = game.address;
+      return [label, () => moveBatch(entities, address)];
+    }
+    const start = Math.floor(index * game.droneCount / taskCount);
+    const end = Math.floor((index + 1) * game.droneCount / taskCount);
+    const entities = Array.from({ length: end - start }, (_, offset) => start + offset);
+    const label = entities.length === 1 ? `无人机 ${end}` : `无人机 ${start + 1}–${end}`;
+    game.owners.fill(index, start, end);
+    if (game.mode === 'objects') {
+      const drones = entities.map(entity => new Drone(entity));
+      return [label, () => updateDrones(drones)];
+    }
+    return [label, () => updateComponents(entities)];
+  }
+
+  const byId = id => document.getElementById(id);
+  const hex = address => `0x${address.toString(16).toUpperCase().padStart(4, '0')}`;
+  const cells = Array.from(memory, () => []);
+  const history = byId('history');
+  const processCount = byId('process-count');
+  const speed = byId('speed');
+  const play = byId('play');
+  const board = byId('board');
+  const context = board.getContext('2d');
+  const strideChart = byId('stride-chart');
+  const chartContext = strideChart.getContext('2d');
+  let processes = [];
+  let game = null;
+  let taskCursor = 0;
+  let stepNumber = 0;
+  let frame = null;
+  let lastFrame = null;
+  let accessCredit = 0;
+  let accessesPerSecond = 4;
+  let currentIndex = null;
+  let inspectedIndex = null;
+  let trace;
+
+  function describe(index) {
+    const { address, bank, row, column } = locationOf(index);
+    return `memory[${index}] → ${hex(address)} → Bank ${bank} / 行 ${row} / 列 ${column}`;
+  }
+
+  function valueAt(index) {
+    const value = memory[index];
+    return game?.fields.get(index)?.signed ? value | 0 : value;
+  }
+
+  function cellInfo(index) {
+    const field = game?.fields.get(index);
+    return `${describe(index)}${field ? ` · ${field.name}` : ''} · 值 ${valueAt(index)}`;
+  }
+
+  function newTrace(round = 0) {
+    return { round, reads: [], writes: 0, lines: new Set() };
+  }
+
+  function cacheLineOf(index) {
+    return Math.floor(index / cellsPerCacheLine);
+  }
+
+  function recordAccess(index, writing) {
+    if (game) {
+      if (trace.round === game.round) trace = newTrace(game.round + 1);
+      trace.lines.add(cacheLineOf(index));
+    }
+    if (writing) {
+      trace.writes++;
+    } else {
+      trace.reads.push(index);
+      if (!game && trace.reads.length > traceWindow) trace.reads.shift();
+    }
+  }
+
+  function formatStride(stride) {
+    if (stride > 0) return `+${stride}`;
+    if (stride < 0) return `−${-stride}`;
+    return '0';
+  }
+
+  function drawStrideChart(strides) {
+    const { width, height } = strideChart;
+    const peak = strides.reduce((max, stride) => Math.max(max, Math.abs(stride)), cellsPerCacheLine);
+    const limit = Math.ceil(peak / cellsPerCacheLine) * cellsPerCacheLine;
+    const padding = 6;
+    const midline = height / 2;
+    const x = index => padding + (width - 2 * padding) * index / Math.max(1, strides.length - 1);
+    const y = stride => midline - stride * (midline - padding) / limit;
+    byId('stride-max').textContent = formatStride(limit);
+    byId('stride-min').textContent = formatStride(-limit);
+    chartContext.clearRect(0, 0, width, height);
+    chartContext.beginPath();
+    chartContext.strokeStyle = '#60758a';
+    chartContext.setLineDash([4, 5]);
+    chartContext.moveTo(0, midline);
+    chartContext.lineTo(width, midline);
+    chartContext.stroke();
+    chartContext.setLineDash([]);
+    if (strides.length === 0) return;
+    chartContext.beginPath();
+    chartContext.strokeStyle = '#66efd8';
+    chartContext.lineWidth = 2;
+    chartContext.moveTo(x(0), y(strides[0]));
+    for (let index = 1; index < strides.length; index++) chartContext.lineTo(x(index), y(strides[index]));
+    chartContext.stroke();
+    chartContext.lineWidth = 1;
+    chartContext.fillStyle = '#66efd8';
+    for (let index = 0; index < strides.length; index++) {
+      chartContext.beginPath();
+      chartContext.arc(x(index), y(strides[index]), 2, 0, Math.PI * 2);
+      chartContext.fill();
+    }
+  }
+
+  function drawTrace() {
+    const strides = trace.reads.slice(1).map((index, offset) => index - trace.reads[offset]);
+    const frequencies = new Map();
+    for (const stride of strides) frequencies.set(stride, (frequencies.get(stride) ?? 0) + 1);
+    const highest = Math.max(0, ...frequencies.values());
+    const mostCommon = [...frequencies.keys()].filter(stride => frequencies.get(stride) === highest);
+    byId('stride-share').textContent = highest ? `${Math.round(highest * 100 / strides.length)}%` : '—';
+    const commonLabel = mostCommon.length === 1 ? `${formatStride(mostCommon[0])} 格` : '多个步长并列';
+    byId('stride-summary').textContent = highest ? `${commonLabel} · ${highest}/${strides.length} 次` : '至少需要两次读取';
+    const scope = game
+      ? `第 ${trace.round} 轮${trace.round === game.round ? '已完成' : ''} · ${trace.reads.length} 读 / ${trace.writes} 写`
+      : `最近 ${traceWindow} 次读取`;
+    byId('trace-scope').textContent = scope;
+    const lines = game ? trace.lines : new Set(trace.reads.map(cacheLineOf));
+    byId('cache-lines').textContent = String(lines.size);
+    for (let index = 0; index < memory.length; index += cellsPerCacheLine) {
+      const touched = lines.has(cacheLineOf(index));
+      for (const cell of cells[index]) cell.classList.toggle('cache-touched', touched);
+    }
+    drawStrideChart(strides);
+  }
+
+  function inspect(index) {
+    if (inspectedIndex !== null) {
+      for (const cell of cells[inspectedIndex]) cell.classList.remove('inspected');
+    }
+    inspectedIndex = index;
+    if (index !== null) {
+      for (const cell of cells[index]) cell.classList.add('inspected');
+    }
+    const displayedIndex = index ?? currentIndex;
+    byId('inspect').textContent = displayedIndex === null
+      ? '悬停任一格子，查看它在两个视图中的位置。'
+      : cellInfo(displayedIndex);
+  }
+
+  function drawGrid(container, indices, rowLabel, axis) {
+    const layout = document.createElement('div');
+    layout.className = 'memory-layout';
+    const ticks = document.createElement('div');
+    ticks.className = 'ticks';
+    for (const column of [0, 8, 16, 24, 31]) {
+      const tick = document.createElement('span');
+      tick.style.gridColumn = String(column + 1);
+      tick.textContent = String(column);
+      ticks.append(tick);
+    }
+    const labels = document.createElement('div');
+    labels.className = 'row-labels mono';
+    for (let row = 0; row < indices.length / columns; row++) {
+      const label = document.createElement('span');
+      label.textContent = rowLabel(row);
+      labels.append(label);
+    }
+    const grid = document.createElement('div');
+    grid.className = 'grid';
+    grid.setAttribute('role', 'img');
+    grid.setAttribute('aria-label', axis);
+    for (const index of indices) {
+      const cell = document.createElement('span');
+      cell.className = 'cell';
+      if (index % cellsPerCacheLine === 0) cell.classList.add('cache-line-start');
+      cell.dataset.index = String(index);
+      cells[index].push(cell);
+      grid.append(cell);
+    }
+    grid.addEventListener('pointerover', event => {
+      const cell = event.target.closest('.cell');
+      inspect(cell ? Number(cell.dataset.index) : null);
+    });
+    grid.addEventListener('pointerleave', () => inspect(null));
+    layout.append(ticks, labels, grid);
+    container.append(layout);
+  }
+
+  function appendAccess(process, index, writing) {
+    const item = document.createElement('li');
+    const name = document.createElement('b');
+    name.className = 'log-process';
+    name.style.setProperty('--process', process.color);
+    name.textContent = process.id;
+    item.append(`#${stepNumber} `, name, ` · ${game ? (writing ? '写 ' : '读 ') : ''}[${index}]`);
+    if (writing) item.classList.add('log-write');
+    if (game) item.title = cellInfo(index);
+    history.append(item);
+    if (history.children.length > Math.max(8, processes.length)) history.firstElementChild.remove();
+  }
+
+  function startReaders() {
+    taskCursor = 0;
+    for (const process of processes) {
+      process.reader = process.createReader();
+      process.command = process.reader.next();
+    }
+  }
+
+  function step() {
+    let process;
+    do {
+      process = processes[taskCursor];
+      taskCursor = (taskCursor + 1) % processes.length;
+    } while (process.command.done);
+
+    // A number requests a load. A store supplies an address and a value.
+    const command = process.command.value;
+    const writing = typeof command !== 'number';
+    const index = writing ? command.index : command;
+    if (writing) memory[index] = command.value;
+    const value = valueAt(index);
+    process.command = process.reader.next(value);
+    stepNumber++;
+
+    if (currentIndex !== null) {
+      for (const cell of cells[currentIndex]) cell.classList.remove('current', 'write');
+    }
+    currentIndex = index;
+    for (const cell of cells[index]) {
+      for (const animation of cell.getAnimations()) animation.cancel();
+      cell.style.setProperty('--process', process.color);
+      cell.classList.add('current');
+      cell.classList.toggle('write', writing);
+      if (writing) cell.title = cellInfo(index);
+      cell.animate([
+        { backgroundColor: writing ? '#ffbf72' : '#f4fffd', boxShadow: `0 0 16px ${process.color}` },
+        { backgroundColor: process.color, boxShadow: `0 0 9px ${process.color}`, offset: 0.15 },
+        {},
+      ], { duration: 1800, easing: 'ease-out' });
+    }
+
+    const field = game?.fields.get(index);
+    byId('current').textContent = `#${stepNumber} ${process.id} ${writing ? '写入' : '读取'} memory[${index}] = ${value}${field ? ` · ${field.name}` : ''}`;
+    byId('current').style.color = process.color;
+    inspect(inspectedIndex);
+    if (stepNumber === 1) history.replaceChildren();
+    appendAccess(process, index, writing);
+    recordAccess(index, writing);
+
+    if (game && process.command.done) {
+      game.tasksRemaining--;
+      if (game.tasksRemaining === 0) {
+        game.round++;
+        game.tasksRemaining = processes.length;
+        startReaders();
+      }
+    }
+  }
+
+  function drawGame() {
+    if (!game) return;
+    const size = board.width / boardColumns;
+    context.clearRect(0, 0, board.width, board.height);
+    context.beginPath();
+    context.strokeStyle = '#253749';
+    for (let x = 1; x < boardColumns; x++) {
+      context.moveTo(x * size, 0);
+      context.lineTo(x * size, board.height);
+    }
+    for (let y = 1; y < boardRows; y++) {
+      context.moveTo(0, y * size);
+      context.lineTo(board.width, y * size);
+    }
+    context.stroke();
+
+    if (!game.batch) {
+      context.fillStyle = '#ffce69';
+      for (let y = 0; y < boardRows; y++) {
+        for (let x = 0; x < boardColumns; x++) {
+          if (memory[tileAddress(x, y)]) context.fillRect((x + 0.5) * size - 3, (y + 0.5) * size - 3, 6, 6);
+        }
+      }
+    }
+
+    // The board is an observer, so drawing it does not advance the game trace.
+    let total = 0;
+    context.font = '700 10px system-ui, sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    for (let drone = 0; drone < game.droneCount; drone++) {
+      const x = (memory[game.address(drone, 'x')] % boardColumns + 0.5) * size;
+      const y = (memory[game.address(drone, 'y')] + 0.5) * size;
+      total += memory[game.address(drone, 'score')];
+      context.beginPath();
+      context.arc(x, y, size * 0.4, 0, Math.PI * 2);
+      context.fillStyle = colors[game.owners[drone]];
+      context.fill();
+      context.fillStyle = '#101a20';
+      context.fillText(String(drone + 1), x, y);
+    }
+    const activity = game.batch ? `${game.droneCount} 架无人机` : `总分 ${total}`;
+    byId('game-summary').textContent = `已完成 ${game.round} 轮 · ${activity}`;
+  }
+
+  function drawPlaybackState() {
+    drawGame();
+    drawTrace();
+  }
+
+  function pause() {
+    if (frame !== null) cancelAnimationFrame(frame);
+    frame = null;
+    lastFrame = null;
+    accessCredit = 0;
+    play.textContent = '播放';
+    play.setAttribute('aria-pressed', 'false');
+  }
+
+  function advancePlayback(now) {
+    if (lastFrame !== null) {
+      // Limit catch-up when the tab has been inactive or the browser stalls.
+      const elapsed = Math.min(now - lastFrame, 100);
+      accessCredit += elapsed * accessesPerSecond / 1000;
+      const accesses = Math.floor(accessCredit);
+      accessCredit -= accesses;
+      for (let count = 0; count < accesses; count++) step();
+      if (accesses > 0) drawPlaybackState();
+    }
+    lastFrame = now;
+    frame = requestAnimationFrame(advancePlayback);
+  }
+
+  function reset() {
+    pause();
+    stepNumber = 0;
+    currentIndex = null;
+    for (let index = 0; index < memory.length; index++) memory[index] = index * 73 + 19;
+    const mode = byId('preset').value;
+    const taskCount = Number(processCount.value);
+    const makeProcess = presets[mode];
+    game = makeProcess ? null : createGame(mode, taskCount);
+    trace = newTrace(game ? 1 : 0);
+    cells.forEach((pair, index) => {
+      for (const cell of pair) {
+        cell.classList.remove('current', 'write');
+        cell.dataset.region = game?.fields.get(index)?.region ?? '';
+        cell.title = cellInfo(index);
+        for (const animation of cell.getAnimations()) animation.cancel();
+      }
+    });
+    processes = Array.from({ length: taskCount }, (_, index) => {
+      const [label, createReader] = game ? makeGameTask(index, taskCount) : makeProcess(index);
+      return { id: `P${index + 1}`, label, color: colors[index], createReader };
+    });
+    startReaders();
+    byId('processes').replaceChildren(...processes.map(process => {
+      const legend = document.createElement('span');
+      legend.style.setProperty('--process', process.color);
+      const dot = document.createElement('i');
+      dot.className = 'dot';
+      const name = document.createElement('b');
+      name.textContent = process.id;
+      legend.append(dot, name, process.label);
+      return legend;
+    }));
+    byId('current').textContent = '点击播放或单步开始。';
+    byId('current').style.removeProperty('color');
+    inspect(null);
+    const empty = document.createElement('li');
+    empty.className = 'empty';
+    empty.textContent = game ? '等待内存访问' : '等待读取';
+    history.replaceChildren(empty);
+    byId('game').hidden = game === null;
+    if (game) {
+      byId('game-title').textContent = game.batch ? '批量移动' : '信标采集';
+      board.setAttribute('aria-label', game.batch ? '横向移动的无人机' : '信标采集游戏中的无人机和信标');
+      if (game.batch) {
+        const objects = mode === 'batch-objects';
+        byId('game-copy').textContent = '每架无人机有 16 个字段，每轮只读取 x 并写回 x + 1。';
+        byId('game-layout').textContent = objects
+          ? 'x 的索引 0 → 16 → 32 → … → 496'
+          : 'x 的索引 0 → 1 → 2 → … → 31';
+        byId('game-rule').textContent = '一轮共 32 次读和 32 次写。画布上的无人机到达右侧后从左侧出现。';
+      } else {
+        const objects = mode === 'objects';
+        byId('game-copy').textContent = objects
+          ? '每个对象依次更新自己的坐标、速度和得分。对象的字段相邻存放。'
+          : '移动系统批量处理坐标和速度，采集系统再更新得分。同一种字段相邻存放。';
+        byId('game-layout').textContent = objects
+          ? 'D1.x · D1.y · D1.vx · D1.vy · D1.score · D2.x · …'
+          : 'x[1] · x[2] · … · x[16] · y[1] · y[2] · …';
+        byId('game-rule').textContent = '无人机碰到边界会反弹，经过黄色信标得 1 分。金色边框表示写入。';
+      }
+    }
+    drawPlaybackState();
+  }
+
+  const allIndices = Array.from(memory.keys());
+  drawGrid(byId('linear'), allIndices, row => hex(locationOf(row * columns).address), '连续地址的内存数组');
+  for (let bank = 0; bank < bankCount; bank++) {
+    const section = document.createElement('section');
+    section.className = 'bank';
+    const title = document.createElement('h3');
+    const label = document.createElement('small');
+    label.textContent = '列 0–31';
+    title.append(`Bank ${bank}`, label);
+    section.append(title);
+    drawGrid(section, allIndices.filter(index => locationOf(index).bank === bank), row => `R${row}`, `Bank ${bank} 的行列阵列`);
+    byId('banks').append(section);
+  }
+
+  play.addEventListener('click', () => {
+    if (frame !== null) {
+      pause();
+      return;
+    }
+    step();
+    drawPlaybackState();
+    frame = requestAnimationFrame(advancePlayback);
+    play.textContent = '暂停';
+    play.setAttribute('aria-pressed', 'true');
+  });
+  byId('step').addEventListener('click', () => { pause(); step(); drawPlaybackState(); });
+  byId('game-tick').addEventListener('click', () => {
+    pause();
+    const round = game.round;
+    do step(); while (game.round === round);
+    drawPlaybackState();
+  });
+  byId('reset').addEventListener('click', reset);
+  byId('preset').addEventListener('change', reset);
+  processCount.addEventListener('change', reset);
+  for (let count = 2; count <= colors.length; count++) {
+    processCount.add(new Option(String(count), String(count), count === 8, count === 8));
+  }
+
+  function updateRate() {
+    accessesPerSecond = rates[Number(speed.value)];
+    const label = `${accessesPerSecond} 次/秒`;
+    byId('rate').textContent = label;
+    speed.setAttribute('aria-valuetext', label);
+    lastFrame = null;
+    accessCredit = 0;
+  }
+
+  speed.max = String(rates.length - 1);
+  speed.addEventListener('input', updateRate);
+  updateRate();
+  reset();
+</script>
+</html>
