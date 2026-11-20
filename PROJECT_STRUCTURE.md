@@ -6,20 +6,30 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| [`scripts/run-trace.sh`](scripts/run-trace.sh) | `--trace` 启动真实采集，`--demo` 生成用于检查画面的演示事件。直接传入程序则按普通方式启动。 |
-| [`collector/dynamorio.mjs`](collector/dynamorio.mjs) | 用 DynamoRIO 的 `drcachesim -tool view` 启动目标程序，从在线输出提取地址、线程和读取长度。 |
-| [`server/server.mjs`](server/server.mjs) | 过滤读取，按线程计算步长，通过本机 HTTP 服务和 SSE 分批发送最新事件与累计统计。 |
-| [`viewer/index.html`](viewer/index.html)、[`viewer/viewer.mjs`](viewer/viewer.mjs) | 用一张矩形 Canvas 按地址从左到右、从上到下画点，显示近期轨迹、地址范围和步长。 |
+| [`scripts/run-trace.sh`](scripts/run-trace.sh) | `--ui` 启动程序选择页，`--trace` 启动真实采集，`--demo` 生成演示事件。直接传入程序则按普通方式启动。 |
+| [`collector/dynamorio.mjs`](collector/dynamorio.mjs)、[`collector/modules.mjs`](collector/modules.mjs) | 用 DynamoRIO 在线提取读取地址、指令地址（PC）、线程和读取长度。Linux 读取 `/proc/<tid>/maps`，Windows 用 PowerShell 查询实际进程的模块加载范围。 |
+| [`server/server.mjs`](server/server.mjs)、[`server/filters.mjs`](server/filters.mjs)、[`server/programs.mjs`](server/programs.mjs) | 在本机浏览可执行文件、启动目标、执行组合筛选，并用 SSE 推送轨迹与统计。 |
+| [`viewer/index.html`](viewer/index.html)、[`viewer/viewer.mjs`](viewer/viewer.mjs) | 选择程序、工作目录和筛选条件。用 Canvas 绘制匹配的读取，显示所属模块及 PC。 |
 
-数据流是「现有可执行文件 → DynamoRIO → 本地 Node.js 服务 → 浏览器」。采集目标是用户态实际读取的虚拟地址。地址以十六进制字符串传输，服务和网页用 `BigInt` 运算。按同一线程中相邻两次符合筛选条件的读取计算步长，平均跳距是这些步长绝对值的平均数，显示到整字节。
+数据流是「现有可执行文件 → DynamoRIO → 本地 Node.js 服务 → 浏览器」。采集目标是用户态实际读取的虚拟地址。地址以十六进制字符串传输，服务和网页用 `BigInt` 运算。模块条件用 PC 判断归属，地址范围条件匹配被读数据的地址。
+
+多个模块之间取并集，多个线程之间也取并集。模块、线程、地址范围和跳距条件同时生效。默认按同线程实际相邻的读取计算跳距，两次读取须同时满足模块与地址条件。设置跳距上下限时，只保留能算出跳距且符合上下限的结果，图上标出最新跳转的起点和终点。也可以切换为「筛选后的同线程读取」，用跳距筛选前相邻的两条匹配读取计算。平均跳距是步长绝对值的平均数，显示到整字节。
 
 画布使用地址偏移和当前地址跨度计算点坐标。默认用本次已观测的最小、最大地址，新地址越界时自动扩大范围。点击「适配近期」可聚焦最近 32 个点，后续事件能继续扩大这个范围。「适配全部」回到全程范围。扩大或缩小显示范围时，已保留的点用原始地址重新定位。
 
-服务每约 33 毫秒发一批，保留最近 1024 个可发送的点。浏览器保留最近 2048 个收到的点，较旧的光点约 2.2 秒淡出。高频读取时，累计统计继续计入所有通过筛选的读取，点图只保留近期样本。原型使用 DynamoRIO 的文本输出，适合先观察范围有限的程序片段。
+服务每约 33 毫秒发一批，保留最近 1024 个可发送的点。浏览器保留最近 2048 个收到的点，较旧的光点约 2.2 秒淡出。换筛选条件时，服务用最近 16,384 条读取重算匹配结果，之后继续计入新事件。启动前设置筛选可从该次采集的第一条开始统计。筛选在采集之后执行，DynamoRIO 的在线文本输出仍覆盖整个目标进程。
 
 ### 运行方式
 
-需要 Node.js 18 或更新版本。原型在 Linux x86-64 上用 DynamoRIO 11.91.20771 验证。使用演示数据可以先检查点图、缩放和统计。
+需要 Node.js 18 或更新版本。原型在 Linux x86-64 上用 DynamoRIO 11.91.20771 验证。Windows 采用 x64 Node.js 和同架构 DynamoRIO。Windows 的实际引擎启动尚待本机验证。
+
+```bash
+node server/server.mjs
+```
+
+打开终端显示的本地地址，在「启动程序」里浏览或填写本机可执行文件、工作目录和参数。启动 NeonEngine 时，可以选择 `x64\Release\Engine.exe`，并将工作目录设置为 NeonEngine 的 `Engine` 子目录。要同时看主程序与 GLFW，在模块栏填 `Engine.exe, glfw3.dll`，也可以运行后从检测到的模块中多选。再填地址或跳距即可组合筛选。
+
+使用演示数据可以先检查点图、缩放和统计。
 
 ```bash
 ./scripts/run-trace.sh --demo
