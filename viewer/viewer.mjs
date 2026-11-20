@@ -5,6 +5,8 @@ const historyLimit = 2048;
 const recentFitCount = 32;
 const fadeMs = 2200;
 const subpixel = 1024n;
+const maxZoom = 32;
+const zoomStep = 1.25;
 const integerFormat = new Intl.NumberFormat('zh-CN');
 const hex = value => `0x${value.toString(16)}`;
 const asBytes = value => `${integerFormat.format(value)} B`;
@@ -15,9 +17,13 @@ let visible = [];
 let allBounds = null;
 let viewBounds = null;
 let recentMode = false;
+let camera = null;
+let viewport = { width: 0, height: 0 };
+const pointers = new Map();
 let frame = null;
 let pixelRatio = 1;
 let hovered = false;
+let hoverPosition = null;
 let epoch = null;
 let captureState = 'ready';
 let starting = false;
@@ -39,23 +45,31 @@ function includeRead(bounds, event) {
   return event.fromValue === null ? next : include(next, event.fromValue);
 }
 
-function coordinates(address) {
-  const { min, max } = viewBounds;
-  if (address < min || address > max) return null;
-  if (min === max) return [plot.width / 2, plot.height / 2];
-
+function layoutFor(bounds) {
   const padding = Math.min(Math.ceil(8 * pixelRatio), Math.floor((Math.min(plot.width, plot.height) - 1) / 2));
   const rowWidth = BigInt(plot.width - 2 * padding) * subpixel;
-  const end = rowWidth * BigInt(plot.height - 2 * padding) - subpixel;
-  const offset = (address - min) * end / (max - min);
-  return [padding + Number(offset % rowWidth) / Number(subpixel), padding + Number(offset / rowWidth) + 0.5];
+  return {
+    ...bounds, ...viewport, padding, rowWidth,
+    end: rowWidth * BigInt(plot.height - 2 * padding) - subpixel,
+    unitsX: viewport.width / plot.width, unitsY: viewport.height / plot.height,
+  };
 }
 
-function drawPoint(event, opacity, latest) {
-  const point = coordinates(event.addressValue);
+function coordinates(address, view) {
+  const { min, max, width, height, padding, rowWidth, end, unitsX, unitsY } = view.layout;
+  if (address < min || address > max) return null;
+  if (min === max) return [view.x + width * view.scale / 2, view.y + height * view.scale / 2];
+  const offset = (address - min) * end / (max - min);
+  const x = (padding + Number(offset % rowWidth) / Number(subpixel)) * unitsX;
+  const y = (padding + Number(offset / rowWidth) + 0.5) * unitsY;
+  return [view.x + x * view.scale, view.y + y * view.scale];
+}
+
+function drawPoint(event, opacity, latest, view) {
+  const point = coordinates(event.addressValue, view);
   if (!point) return;
   const [x, y] = point;
-  const radius = (latest ? 3.5 : 1.6) * pixelRatio;
+  const radius = latest ? 3.5 : 1.6;
   context.globalAlpha = opacity;
   context.fillStyle = latest ? '#dcfff8' : '#66efd8';
   if (latest) {
@@ -68,43 +82,46 @@ function drawPoint(event, opacity, latest) {
   } else {
     context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
   }
-  visible.push({ x, y, event });
+  if (x >= 0 && x < viewport.width && y >= 0 && y < viewport.height) visible.push({ x, y, event });
 }
 
-function drawJump(event) {
+function drawJump(event, view) {
   if (event.fromValue === null) return;
-  const from = coordinates(event.fromValue);
-  const to = coordinates(event.addressValue);
+  const from = coordinates(event.fromValue, view);
+  const to = coordinates(event.addressValue, view);
   if (!from || !to) return;
   context.globalAlpha = 0.65;
   context.strokeStyle = '#66efd8';
-  context.lineWidth = pixelRatio;
+  context.lineWidth = 1;
   context.beginPath();
   context.moveTo(...from);
   context.lineTo(...to);
   context.stroke();
   context.beginPath();
-  context.arc(...from, 3 * pixelRatio, 0, Math.PI * 2);
+  context.arc(...from, 3, 0, Math.PI * 2);
   context.stroke();
 }
 
 function draw(now) {
   frame = null;
-  context.clearRect(0, 0, plot.width, plot.height);
+  context.setTransform(plot.width / viewport.width, 0, 0, plot.height / viewport.height, 0, 0);
+  context.clearRect(0, 0, viewport.width, viewport.height);
   visible = [];
   if (!viewBounds || history.length === 0) return;
+  const view = camera ?? { layout: layoutFor(viewBounds), scale: 1, x: 0, y: 0 };
   const latest = history.at(-1);
-  drawJump(latest);
+  drawJump(latest, view);
   let fading = false;
   for (let index = history.length - 2; index >= 0; index--) {
     const event = history[index];
     const fraction = 1 - Math.max(0, now - event.seenAt) / fadeMs;
     if (fraction <= 0) break;
     fading = true;
-    drawPoint(event, fraction * 0.6, false);
+    drawPoint(event, fraction * 0.6, false, view);
   }
-  drawPoint(latest, 1, true);
+  drawPoint(latest, 1, true, view);
   context.globalAlpha = 1;
+  updateHover();
   if (fading) requestDraw();
 }
 
@@ -113,11 +130,19 @@ function requestDraw() {
 }
 
 function updateBounds() {
+  const scale = camera?.scale ?? 1;
+  $('zoom-level').textContent = `${Math.round(scale * 100)}%`;
+  $('zoom-in').disabled = !viewBounds || scale >= maxZoom;
+  $('zoom-out').disabled = !viewBounds || scale <= 1;
+  $('range-kind').textContent = camera ? '基准范围' : '地址范围';
+  $('span-label').textContent = camera ? '基准跨度' : '显示跨度';
+  plot.dataset.interactive = String(Boolean(viewBounds));
+  plot.dataset.pannable = String(Boolean(camera && (camera.layout.width * scale > viewport.width || camera.layout.height * scale > viewport.height)));
+  requestDraw();
   if (!viewBounds) return;
   $('range-start').textContent = hex(viewBounds.min);
   $('range-end').textContent = hex(viewBounds.max);
   $('span').textContent = asBytes(viewBounds.max - viewBounds.min + 1n);
-  requestDraw();
 }
 
 function showPoint(event, prefix) {
@@ -128,42 +153,149 @@ function showPoint(event, prefix) {
   $('point').title = event.modulePath ?? '';
 }
 
+function clampPan(offset, size, length) {
+  if (size <= length) return (length - size) / 2;
+  return Math.max(length - size, Math.min(0, offset));
+}
+
+function moveCamera(previous, next, factor = 1) {
+  if (!viewBounds) return;
+  const view = camera ?? { layout: layoutFor(viewBounds), scale: 1, x: 0, y: 0 };
+  const scale = Math.max(1, Math.min(maxZoom, view.scale * factor));
+  const ratio = scale / view.scale;
+  const x = clampPan(next.x - (previous.x - view.x) * ratio, view.layout.width * scale, viewport.width);
+  const y = clampPan(next.y - (previous.y - view.y) * ratio, view.layout.height * scale, viewport.height);
+  if (scale === view.scale && x === view.x && y === view.y) return;
+  camera = { layout: view.layout, scale, x, y };
+  updateBounds();
+}
+
 function resize() {
-  pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-  plot.width = Math.max(1, Math.round(plot.clientWidth * pixelRatio));
-  plot.height = Math.max(1, Math.round(plot.clientHeight * pixelRatio));
-  requestDraw();
+  const width = Math.max(1, plot.clientWidth);
+  const height = Math.max(1, plot.clientHeight);
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  if (width === viewport.width && height === viewport.height && ratio === pixelRatio) return;
+  if (camera) {
+    camera.x = clampPan(camera.x + (width - viewport.width) / 2, camera.layout.width * camera.scale, width);
+    camera.y = clampPan(camera.y + (height - viewport.height) / 2, camera.layout.height * camera.scale, height);
+  }
+  clearPointers();
+  hoverPosition = null;
+  viewport = { width, height };
+  pixelRatio = ratio;
+  plot.width = Math.max(1, Math.round(width * ratio));
+  plot.height = Math.max(1, Math.round(height * ratio));
+  updateBounds();
 }
 new ResizeObserver(resize).observe(plot);
 resize();
 
-plot.addEventListener('pointermove', event => {
+function positionOf(event) {
   const box = plot.getBoundingClientRect();
-  const x = (event.clientX - box.left) * plot.width / box.width;
-  const y = (event.clientY - box.top) * plot.height / box.height;
-  let distance = 8 * pixelRatio;
+  return { x: event.clientX - box.left, y: event.clientY - box.top };
+}
+
+function updateHover() {
+  if (pointers.size) return;
+  const wasHovered = hovered;
   let nearest = null;
-  for (const point of visible) {
-    const candidate = Math.hypot(x - point.x, y - point.y);
-    if (candidate <= distance) {
-      nearest = point.event;
-      distance = candidate;
+  if (hoverPosition) {
+    let distance = 8;
+    for (const point of visible) {
+      const candidate = Math.hypot(hoverPosition.x - point.x, hoverPosition.y - point.y);
+      if (candidate <= distance) {
+        nearest = point.event;
+        distance = candidate;
+      }
     }
   }
   hovered = nearest !== null;
-  showPoint(nearest || history.at(-1), hovered ? '指向' : '最新');
-});
-plot.addEventListener('pointerleave', () => {
+  if (hovered || wasHovered) showPoint(nearest ?? history.at(-1), hovered ? '指向' : '最新');
+}
+
+function gesture() {
+  const [first, second] = pointers.values();
+  if (!second) return { ...first, distance: 0 };
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2,
+    distance: Math.hypot(first.x - second.x, first.y - second.y) };
+}
+
+function clearPointers() {
+  const ids = [...pointers.keys()];
+  pointers.clear();
+  delete plot.dataset.dragging;
+  for (const id of ids) {
+    if (plot.hasPointerCapture(id)) plot.releasePointerCapture(id);
+  }
+}
+
+plot.addEventListener('pointerdown', event => {
+  if (!viewBounds || event.button !== 0 || pointers.size >= 2) return;
+  if (pointers.size && (event.pointerType !== 'touch' || pointers.values().next().value.type !== 'touch')) return;
+  pointers.set(event.pointerId, { ...positionOf(event), type: event.pointerType });
+  plot.setPointerCapture(event.pointerId);
+  plot.dataset.dragging = 'true';
+  hoverPosition = null;
   hovered = false;
   showPoint(history.at(-1), '最新');
 });
 
+plot.addEventListener('pointermove', event => {
+  const point = positionOf(event);
+  if (pointers.has(event.pointerId)) {
+    const previous = gesture();
+    pointers.set(event.pointerId, { ...point, type: event.pointerType });
+    const next = gesture();
+    const factor = previous.distance >= 1 && next.distance >= 1 ? next.distance / previous.distance : 1;
+    moveCamera(previous, next, factor);
+  } else if (!pointers.size && event.pointerType !== 'touch') {
+    hoverPosition = point;
+    updateHover();
+  }
+});
+
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  plot.addEventListener(type, event => {
+    if (!pointers.delete(event.pointerId) || pointers.size) return;
+    delete plot.dataset.dragging;
+    if (type === 'pointerup' && event.pointerType !== 'touch') {
+      const point = positionOf(event);
+      if (point.x >= 0 && point.y >= 0 && point.x < viewport.width && point.y < viewport.height) hoverPosition = point;
+    }
+    requestDraw();
+  });
+}
+
+plot.addEventListener('pointerleave', () => {
+  hoverPosition = null;
+  updateHover();
+});
+
+plot.addEventListener('wheel', event => {
+  if (!viewBounds || !event.deltaY) return;
+  event.preventDefault();
+  const point = positionOf(event);
+  const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.height : 1;
+  moveCamera(point, point, Math.exp(-event.deltaY * units * 0.002));
+}, { passive: false });
+
+for (const [id, factor] of [['zoom-in', zoomStep], ['zoom-out', 1 / zoomStep]]) {
+  $(id).addEventListener('click', () => {
+    const center = { x: viewport.width / 2, y: viewport.height / 2 };
+    moveCamera(center, center, factor);
+  });
+}
+
 $('fit-all').addEventListener('click', () => {
+  camera = null;
+  clearPointers();
   recentMode = false;
   viewBounds = { ...allBounds };
   updateBounds();
 });
 $('fit-recent').addEventListener('click', () => {
+  camera = null;
+  clearPointers();
   recentMode = true;
   viewBounds = history.slice(-recentFitCount).reduce(includeRead, null);
   updateBounds();
@@ -358,11 +490,13 @@ $('folder-select').addEventListener('click', () => {
 function resetView() {
   history = [];
   allBounds = viewBounds = null;
+  camera = hoverPosition = null;
+  clearPointers();
   recentMode = hovered = false;
   for (const id of ['range-start', 'range-end', 'span', 'stride']) $(id).textContent = '—';
   $('point').title = '';
   $('fit-all').disabled = $('fit-recent').disabled = true;
-  requestDraw();
+  updateBounds();
 }
 
 const stream = new EventSource('/events');
@@ -397,13 +531,9 @@ stream.onmessage = message => {
     return;
   }
 
+  if (batch.total < (history.at(-1)?.seq ?? 0)) resetView();
   allBounds = { min: BigInt(batch.min), max: BigInt(batch.max) };
-  if (batch.total < (history.at(-1)?.seq ?? 0)) {
-    history = [];
-    recentMode = false;
-    hovered = false;
-  }
-  if (!recentMode) viewBounds = { ...allBounds };
+  if (!camera && !recentMode) viewBounds = { ...allBounds };
   const seenAt = performance.now();
   const previousSequence = history.at(-1)?.seq ?? 0;
   for (const point of batch.points) {
@@ -411,7 +541,7 @@ stream.onmessage = message => {
     const event = { ...point, addressValue: BigInt(point.address),
       fromValue: point.fromAddress ? BigInt(point.fromAddress) : null, seenAt };
     history.push(event);
-    if (recentMode) viewBounds = includeRead(viewBounds, event);
+    if (!camera && recentMode) viewBounds = includeRead(viewBounds, event);
   }
   if (history.length > historyLimit) history = history.slice(-historyLimit);
   const latest = history.at(-1);
