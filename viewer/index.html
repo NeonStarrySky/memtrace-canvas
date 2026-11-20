@@ -36,11 +36,17 @@
   #detected-modules label { display: inline-flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
   #detected-modules input { width: auto; accent-color: #66efd8; }
   .controls { justify-content: flex-start; margin-bottom: 12px; }
+  .zoom-controls { display: inline-flex; align-items: center; gap: 6px; }
+  #zoom-level, #range-kind { color: #a1b4c8; font-size: 12px; }
+  #zoom-level { min-width: 5ch; text-align: center; font-variant-numeric: tabular-nums; }
   button { border: 1px solid #3b5065; border-radius: 6px; background: #192738; color: inherit; font: inherit; padding: 5px 10px; cursor: pointer; }
   button:hover, button:focus-visible { border-color: #66efd8; }
   button:disabled { opacity: .48; cursor: default; }
   .bounds { font: 13px ui-monospace, monospace; color: #a1b4c8; overflow-wrap: anywhere; }
   canvas { display: block; width: 100%; height: clamp(210px, 48vw, 460px); margin: 8px 0; outline: 1px solid #2a3b4c; border-radius: 6px; background: #080f18; }
+  #plot[data-interactive="true"] { touch-action: none; }
+  #plot[data-pannable="true"] { cursor: grab; }
+  #plot[data-pannable="true"][data-dragging="true"] { cursor: grabbing; }
   .metrics { margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 20px; }
   dd { color: #66efd8; font: 16px ui-monospace, monospace; overflow-wrap: anywhere; }
   #point { margin-top: 10px; min-height: 1.5em; color: #c1d4e6; font: 13px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
@@ -105,14 +111,19 @@
     <div class="controls">
       <button id="fit-all" type="button" disabled>适配全部</button>
       <button id="fit-recent" type="button" disabled>适配近期</button>
+      <div class="zoom-controls" role="group" aria-label="缩放">
+        <button id="zoom-out" type="button" aria-label="缩小" disabled>−</button>
+        <output id="zoom-level" aria-label="缩放倍率" aria-live="off">100%</output>
+        <button id="zoom-in" type="button" aria-label="放大" disabled>+</button>
+      </div>
     </div>
-    <div class="bounds"><span id="range-start">—</span><span id="range-end">—</span></div>
+    <div class="bounds"><span id="range-start">—</span><span id="range-kind">地址范围</span><span id="range-end">—</span></div>
     <canvas id="plot" role="img" aria-label="按虚拟地址从左到右、从上到下绘制的读取点"></canvas>
     <p id="point">等待第一次读取</p>
     <dl class="metrics">
       <div><dt>已采集读取</dt><dd id="raw-total">0</dd></div>
       <div><dt>匹配读取</dt><dd id="total">0</dd></div>
-      <div><dt>显示跨度</dt><dd id="span">—</dd></div>
+      <div><dt id="span-label">显示跨度</dt><dd id="span">—</dd></div>
       <div><dt>最新步长（同线程）</dt><dd id="stride">—</dd></div>
       <div><dt>平均跳距（同线程）</dt><dd id="mean">—</dd></div>
     </dl>
